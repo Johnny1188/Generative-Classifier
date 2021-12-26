@@ -2,8 +2,8 @@ import torch
 from torch import nn
 import wandb
 
-from Classifier import ClassifierHeadBlock, ClassifierCNNBlock
-from Generator import GeneratorHeadBlock, GeneratorCNNBlock
+from models.Classifier import ClassifierHeadBlock, ClassifierCNNBlock
+from models.Generator import GeneratorHeadBlock, GeneratorCNNBlock
 
 class ReGALModel(nn.Module):
   def __init__(self, config_dict):
