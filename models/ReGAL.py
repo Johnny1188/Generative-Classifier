@@ -123,7 +123,7 @@ class ReGALModel(nn.Module):
             classifier_head_block_optimizer.zero_grad()
 
             del z, h, h_reshaped_for_cnn_block, X_hat
-            print(f"#{reconstruction_step}:\n{torch.argmax(y_hat, dim=1)}")
+            # print(f"#{reconstruction_step}:\n>>> Now predicted: {torch.argmax(y_hat, dim=1).detach().cpu().tolist()}\n")
             if reconstruction_step != max_reconstruction_steps-1:
                 del y_hat
 
@@ -185,10 +185,6 @@ class ReGALModel(nn.Module):
             for data in X_train_loader:
                 X, y = [part_of_data.to(self.config_dict["device"]) for part_of_data in data]
 
-                # if( X.shape[0] != batch_size ):
-                #     print("Incorrect batch size!")
-                #     continue
-                
                 ##### Classifier #####
                 # regular supervised classification step
                 z = self.classifier["cnn_block"](X)
@@ -220,7 +216,8 @@ class ReGALModel(nn.Module):
                     self.config_dict["generator_alpha"] * reconstruction_loss \
                     + (1 - self.config_dict["generator_alpha"]) * classification_loss_from_reconstructed_img
                 merged_generator_loss.backward()
-
+                self.classifier_optimizer.zero_grad()
+                
                 self.generator_optimizer.step()
                 self.generator_optimizer.zero_grad()
                 #####
