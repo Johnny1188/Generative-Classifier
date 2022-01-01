@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import seaborn as sns
 import torch
 import numpy as np
 
@@ -47,3 +48,13 @@ def show_samples(samples, epoch=0, from_sample_num=0, num_of_samples_to_show=5, 
         titles_preds,
         w_color=True
     )
+
+def plot_weights(weights):
+    fig, ax = plt.subplots(figsize=(30,6))
+    sns.heatmap(
+        weights,
+        xticklabels=15,
+        axes=ax
+    )
+    ax.set_ylabel("layer n-1 neurons")
+    ax.set_xlabel("layer n neurons")
