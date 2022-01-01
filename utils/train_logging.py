@@ -6,7 +6,7 @@ import wandb
 import torch
 
 class PretrainLogging():
-    def __init__(self, past_loss_history=None, verbose=True, is_wandb_run=False, class_names=None, num_of_epochs=0, path_to_tmp_folder=".regal_tmp"):
+    def __init__(self, past_loss_history=None, verbose=True, is_wandb_run=False, class_names=None, num_of_epochs=0, path_to_tmp_folder="_regal_tmp"):
         assert (is_wandb_run and class_names) or not is_wandb_run
         self.loss_history = {"classifier":[],"generator":[]} if past_loss_history == None else past_loss_history
         self.samples =[]
@@ -17,7 +17,7 @@ class PretrainLogging():
         self.path_to_tmp_folder = path_to_tmp_folder
 
         if self.is_wandb_run:
-            os.makedirs(".regal_tmp", exist_ok=True) # only for W&B logging
+            os.makedirs(self.path_to_tmp_folder, exist_ok=True) # only for W&B logging
 
     def track_epoch(self, epoch_i, classification_loss, reconstruction_loss, X, X_hat, y, y_hat):
         self.loss_history["classifier"].append(classification_loss)
