@@ -11,7 +11,11 @@ def imshow_mnist(img, title):
     plt.show()
 
 def imshow_cifar10(imgs, titles=None, w_color=True):
-    fig, axes = plt.subplots(((imgs.shape[0]-1) // 5)+1, imgs.shape[0] if len(imgs.shape) == 4 else 1, squeeze=False, figsize=(17,5))
+    fig, axes = plt.subplots(
+        ((imgs.shape[0]-1) // 5) + 1, 5 if (len(imgs.shape) == 4 and imgs.shape[0] > 1) else 1,
+        squeeze=False,
+        figsize=(20, 4 * ((imgs.shape[0]-1) // 5 + 1))
+    )
     curr_img_i = 0
     curr_img = imgs if len(imgs.shape) == 3 else imgs[curr_img_i]
     while curr_img != None:
