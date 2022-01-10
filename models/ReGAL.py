@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import wandb
 import numpy as np
-import matplotlib
+import matplotlib.pyplot as plt
 import os
 import shutil
 
@@ -80,17 +80,9 @@ class ReGALModel(nn.Module):
             weight_decay=generator_weight_decay
         )
 
-    def forward(self, X, max_reconstruction_steps=10, batch_size=32):
-        classifier_cnn_block_optimizer = torch.optim.Adam(
-            self.classifier["cnn_block"].parameters(),
-            lr=self._eval_run_classifier_cnn_block_optimizer_lr,
-            weight_decay=self._eval_run_classifier_cnn_block_optimizer_weight_decay
-        )
-        classifier_head_block_optimizer = torch.optim.Adam(
-            self.classifier["head_block"].parameters(),
-            lr=self._eval_run_classifier_head_block_optimizer_lr,
-            weight_decay=self._eval_run_classifier_head_block_optimizer_weight_decay
-        )
+    def forward(self, X, max_reconstruction_steps=10, batch_size=32, y=None):
+        # parameter y (targets) only for logging purposes
+        # (tracking the continual change in classification loss when reconstruction regularizer is used)
 
         if max_reconstruction_steps == 0: # No reconstruction regularizer
             z = self.classifier["cnn_block"](X)
@@ -98,6 +90,20 @@ class ReGALModel(nn.Module):
             y_hat = self.classifier["head_block"](z)
             return(y_hat)
 
+        ##### with iterative reconstruction #####
+        # classifier_cnn_block_optimizer = torch.optim.Adam(
+        #     self.classifier["cnn_block"].parameters(),
+        #     lr=self._eval_run_classifier_cnn_block_optimizer_lr,
+        #     weight_decay=self._eval_run_classifier_cnn_block_optimizer_weight_decay
+        # )
+        classifier_head_block_optimizer = torch.optim.Adam(
+            self.classifier["head_block"].parameters(),
+            lr=self._eval_run_classifier_head_block_optimizer_lr,
+            weight_decay=self._eval_run_classifier_head_block_optimizer_weight_decay
+        )
+
+        # print(f"#####\nTargets >>> {y}")
+        pred_loss_during_reconstruction = []
         for reconstruction_step in range(max_reconstruction_steps):
             z = self.classifier["cnn_block"](X)
             z = z.reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
@@ -112,9 +118,8 @@ class ReGALModel(nn.Module):
             reconstruction_loss = self.loss_func_img_reconstruction(X_hat, X)
             reconstruction_loss.backward()
 
-
-            classifier_cnn_block_optimizer.step()
-            classifier_cnn_block_optimizer.zero_grad()
+            # classifier_cnn_block_optimizer.step()
+            # classifier_cnn_block_optimizer.zero_grad()
 
             classifier_head_block_optimizer.step()
             # for l in self.classifier["head_block"].dense_layers_stack:
@@ -122,12 +127,15 @@ class ReGALModel(nn.Module):
             #         print(torch.sum(torch.abs(l.weight.grad)))
             classifier_head_block_optimizer.zero_grad()
 
+            if y != None:
+                pred_loss_during_reconstruction.append(self.loss_func_classification(y_hat,y).detach().cpu().item())
+
             del z, h, h_reshaped_for_cnn_block, X_hat
-            # print(f"#{reconstruction_step}:\n>>> Now predicted: {torch.argmax(y_hat, dim=1).detach().cpu().tolist()}\n")
+            # print(f"[{reconstruction_step+1:02}/{max_reconstruction_steps}] >>> {torch.argmax(y_hat, dim=1).detach().cpu().tolist()}")
             if reconstruction_step != max_reconstruction_steps-1:
                 del y_hat
 
-        return(y_hat)
+        return(y_hat, pred_loss_during_reconstruction)
 
     def turn_model_to_mode(self, mode="train"):
         assert mode in ("train", "training", "eval", "evaluation")

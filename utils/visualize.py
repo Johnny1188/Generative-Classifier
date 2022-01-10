@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 import numpy as np
+import math
 
 def imshow_mnist(img, title):
     img = img / 2 + 0.5 # unnormalize
@@ -62,3 +63,21 @@ def plot_weights(weights):
     )
     ax.set_ylabel("layer n-1 neurons")
     ax.set_xlabel("layer n neurons")
+
+def plot_gradual_classification_loss(classification_loss_history, n_cols=3):
+    n_batches = len(classification_loss_history)
+
+    _ = plt.figure(1, figsize=(14,8))
+    for b_i in range(n_batches):
+        plt.plot(classification_loss_history[b_i])
+    plt.show()
+
+    _ = plt.figure(2)
+    n_rows = math.ceil(n_batches / n_cols)
+    fig, axes = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(min(23, n_batches*6),(n_batches+n_cols//n_cols)*2 - 3))
+    for i in range(n_batches):
+        if n_rows > 1:
+            axes[i // n_cols][i % n_cols].plot(classification_loss_history[i])
+        else:
+            axes[i % n_cols].plot(classification_loss_history[i])
+    plt.show()
