@@ -88,7 +88,7 @@ class ReGALModel(nn.Module):
             z = self.classifier["cnn_block"](X)
             z = z.reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
             y_hat = self.classifier["head_block"](z)
-            return(y_hat)
+            return(y_hat, [])
 
         ##### with iterative reconstruction #####
         # classifier_cnn_block_optimizer = torch.optim.Adam(
@@ -181,7 +181,7 @@ class ReGALModel(nn.Module):
         print(f"Successfully saved the model's parameters to {filepath}")
         return(True)
 
-    def pretrain(self, epochs, X_train_loader, batch_size=32, past_loss_history=None, verbose=True, is_wandb_run=False, class_names=None):
+    def pretrain(self, epochs, X_train_loader, batch_size=32, past_loss_history=None, verbose=True, is_wandb_run=False, class_names=None, gan_learning=True):
         pretrain_logging = PretrainLogging(
             past_loss_history=past_loss_history, verbose=verbose, is_wandb_run=is_wandb_run,
             class_names=class_names, num_of_epochs=epochs
@@ -207,7 +207,7 @@ class ReGALModel(nn.Module):
 
                 ##### Generator #####
                 # 1. Reconstruction step w/ the classes (either w/ predicted => unsupervised mode; or w/ true target labels => only supervised)
-                y_onehot = nn.functional.one_hot(y,10).float().to(self.config_dict["device"])
+                y_onehot = nn.functional.one_hot(y,11).float().to(self.config_dict["device"])
                 h = self.generator["head_block"](z.detach(), y_onehot) # <-- pretraining generator on the true target labels (less noise)
                 # h = self.generator["head_block"](z.detach(), y_hat.detach()) # <-- pretraining generator on classifier's prediction
                 h_reshaped_for_cnn_block = torch.reshape(h, (batch_size, *self.config_dict["generator_input_dims"]))
@@ -224,10 +224,25 @@ class ReGALModel(nn.Module):
                     self.config_dict["generator_alpha"] * reconstruction_loss \
                     + (1 - self.config_dict["generator_alpha"]) * classification_loss_from_reconstructed_img
                 merged_generator_loss.backward()
-                self.classifier_optimizer.zero_grad()
-                
+
                 self.generator_optimizer.step()
                 self.generator_optimizer.zero_grad()
+
+                if gan_learning:
+                    ##### Discriminator (classifier's appended class 10 for "_from_generator") #####
+                    gan_labels = torch.full((X.size(0),), fill_value=10, dtype=torch.long, device=self.config_dict["device"])
+                    z = self.classifier["cnn_block"](X_hat.detach())
+                    z = z.reshape((self.config_dict["classifier_cnn_input_dims"][0], self.config_dict["classifier_cnn_output_dim"]))
+                    y_hat = self.classifier["head_block"](z)
+                    classifier_loss_discriminating = self.loss_func_classification(y_hat, gan_labels)
+                    classifier_loss_discriminating.backward()
+
+                    # for l in self.classifier["head_block"].dense_layers_stack:
+                    #     if type(l) == torch.nn.modules.linear.Linear:
+                    #         print(torch.sum(torch.abs(l.weight.grad)))
+                    
+                    self.classifier_optimizer.step()
+                self.classifier_optimizer.zero_grad()
                 #####
 
             pretrain_logging.track_epoch(
