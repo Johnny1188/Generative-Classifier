@@ -1,2 +1,1 @@
-# ReGAL-model
-Recurrent generative image classifier
+# Generative image classifier (experiment)
