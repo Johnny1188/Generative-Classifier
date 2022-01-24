@@ -1,4 +1,4 @@
-# Generative classifier *(experiment)*
+# Generative image classifier *(experiment)*
 **Main inspiration:** Recurrent communication in the brain between lower-level visual areas and prefrontal cortex (among others) during task-related visual processing + [Adaptive resonance theory (Stephen Grossberg and Gail Carpenter)](http://www.scholarpedia.org/article/Adaptive_resonance_theory).
 
 **Hypothesis:** Classification at inference time based primarily on recurrent generative process should yield superior results. Incorrectly categorized objects should be harder to reconstruct.
