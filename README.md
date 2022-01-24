@@ -5,7 +5,7 @@
 
 **Quick sketch of the architecture:**
 
-![Sketch of the architecture](/results/arch_sketch.jpg)
+![Sketch of the architecture](/results/architecture_sketch.jpg)
 
 
 ## Results
