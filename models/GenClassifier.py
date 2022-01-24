@@ -1,24 +1,16 @@
 import torch
 from torch import nn
-import wandb
-import numpy as np
-import matplotlib
-import os
-import shutil
 
 from models.Classifier import ClassifierHeadBlock, ClassifierCNNBlock
 from models.Generator import GeneratorHeadBlock, GeneratorCNNBlock
-from utils.train_logging import PretrainLogging
 
-class ReGALModel(nn.Module):
+
+class GenClassifier(nn.Module):
     def __init__(self, config_dict):
         assert config_dict["generator_cnn_block_in_layer_shapes"][0] == config_dict["classifier_cnn_output_dim"]
-        # assert config_dict["generator_prediction_in_layer_shapes"][0] == config_dict["classifier_head_layers"][-1]
         assert config_dict["generator_in_combined_main_layer_shapes"][0] == config_dict["generator_cnn_block_in_layer_shapes"][-1]+config_dict["generator_prediction_in_layer_shapes"][-1]
         super().__init__()
-
         self.config_dict = config_dict
-
         self.classifier = {
             "cnn_block": ClassifierCNNBlock(
                 cnn_layers=config_dict["classifier_cnn_layers"],
@@ -29,7 +21,6 @@ class ReGALModel(nn.Module):
                 input_dim=config_dict["classifier_cnn_output_dim"]
             )
         }
-
         self.generator = {
             "head_block": GeneratorHeadBlock(
                 classifier_cnn_block_in_layer_shapes=config_dict["generator_cnn_block_in_layer_shapes"],
@@ -39,17 +30,51 @@ class ReGALModel(nn.Module):
             ),
             "trans_cnn_block": GeneratorCNNBlock(
                 cnn_transpose_layers=config_dict["generator_cnn_trans_layer_shapes"],
-                input_dims=config_dict["generator_input_dims"]
+                input_dims=config_dict["generator_trans_cnn_input_dims"]
             )
         }
 
-        self._init_loss_funcs()
         self._init_optimizers(config_dict["classifier_lr"], config_dict["classifier_weight_decay"], config_dict["generator_lr"], config_dict["generator_weight_decay"])
         self._move_to_target_device()
         self._eval_run_classifier_cnn_block_optimizer_lr = config_dict["eval_run_classifier_cnn_block_optimizer_lr"]
         self._eval_run_classifier_cnn_block_optimizer_weight_decay = config_dict["eval_run_classifier_cnn_block_optimizer_weight_decay"]
         self._eval_run_classifier_head_block_optimizer_lr = config_dict["eval_run_classifier_head_block_optimizer_lr"]
         self._eval_run_classifier_head_block_optimizer_weight_decay = config_dict["eval_run_classifier_head_block_optimizer_weight_decay"]
+    
+    def forward(self, X, hypotheses_testing=True, num_of_reconstruction_steps=2, batch_size=32, norm_cos_similarities=False, cos_similarity_multiplier=1.0, _y=None):
+        # (tracking the continual change in classification loss when reconstruction regularizer is used)
+        z_real = torch.flatten(self.classifier["cnn_block"](X), start_dim=1)
+        y_hat_initial = self.classifier["head_block"](z_real.detach())
+        if(hypotheses_testing == False): return(y_hat_initial) # the baseline prediction by the classifier from the input image
+
+        cos_func = nn.CosineSimilarity(dim=1, eps=1e-6)
+        cos_similarities = torch.zeros_like(y_hat_initial)
+
+        for hypothesis_i in range(self.config_dict["classifier_head_layers"][-1]):
+            hypothesized_category_onehot = torch.zeros((batch_size, self.config_dict["classifier_head_layers"][-1]), device=self.config_dict["device"])
+            hypothesized_category_onehot[:,hypothesis_i] = 1.
+
+            h = self.generator["head_block"](z_real.detach(), hypothesized_category_onehot)
+            h_reshaped_for_cnn_block = torch.reshape(h, (batch_size, *self.config_dict["generator_trans_cnn_input_dims"]))
+            X_hat = self.generator["trans_cnn_block"](h_reshaped_for_cnn_block)
+
+            for _ in range(num_of_reconstruction_steps): # let the generator transform the z based on the hypothesized category
+                z = self.classifier["cnn_block"](X_hat).reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
+                h = self.generator["head_block"](z.detach(), hypothesized_category_onehot)
+                h_reshaped_for_cnn_block = torch.reshape(h, (batch_size, *self.config_dict["generator_trans_cnn_input_dims"]))
+                X_hat = self.generator["trans_cnn_block"](h_reshaped_for_cnn_block)
+
+            z_gen = self.classifier["cnn_block"](X_hat).reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
+            y_hat_from_gen = self.classifier["head_block"](z_gen)
+
+            cos_similarity = cos_func(z_real, z_gen)
+            if norm_cos_similarities: cos_similarity /= cos_similarity.norm()
+            cos_similarity = torch.exp(cos_similarity * cos_similarity_multiplier) * nn.functional.softmax(y_hat_from_gen,dim=1)[:,hypothesis_i]
+            cos_similarities[:, hypothesis_i] = cos_similarity
+
+        # print(f"{_y[0].item()}\nBefore: {[round(n,4) for n in nn.functional.softmax(y_hat_initial[0],dim=0).tolist()]}\nAfter:  {[round(n,4) for n in nn.functional.softmax(cos_similarities[0],dim=0).tolist()]}\n")
+        y_hat_final = y_hat_initial + (nn.functional.softmax(cos_similarities,dim=1).T * y_hat_initial.std(dim=1)).T
+        return(y_hat_final)
 
     def _move_to_target_device(self):
         self.to(self.config_dict["device"])
@@ -59,10 +84,6 @@ class ReGALModel(nn.Module):
         self.generator['head_block'].dense_layers_stack_dict["in_classifier_prediction"].to(self.config_dict["device"])
         self.generator['head_block'].dense_layers_stack_dict["in_combined_main_stack"].to(self.config_dict["device"])
         self.generator['trans_cnn_block'].to(self.config_dict["device"])
-
-    def _init_loss_funcs(self):
-        self.loss_func_classification = nn.CrossEntropyLoss()
-        self.loss_func_img_reconstruction = nn.MSELoss()
 
     def _init_optimizers(self, classifier_lr, classifier_weight_decay, generator_lr, generator_weight_decay):
         self.classifier_optimizer = torch.optim.Adam(
@@ -79,55 +100,6 @@ class ReGALModel(nn.Module):
             lr=generator_lr,
             weight_decay=generator_weight_decay
         )
-
-    def forward(self, X, max_reconstruction_steps=10, batch_size=32):
-        classifier_cnn_block_optimizer = torch.optim.Adam(
-            self.classifier["cnn_block"].parameters(),
-            lr=self._eval_run_classifier_cnn_block_optimizer_lr,
-            weight_decay=self._eval_run_classifier_cnn_block_optimizer_weight_decay
-        )
-        classifier_head_block_optimizer = torch.optim.Adam(
-            self.classifier["head_block"].parameters(),
-            lr=self._eval_run_classifier_head_block_optimizer_lr,
-            weight_decay=self._eval_run_classifier_head_block_optimizer_weight_decay
-        )
-
-        if max_reconstruction_steps == 0: # No reconstruction regularizer
-            z = self.classifier["cnn_block"](X)
-            z = z.reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
-            y_hat = self.classifier["head_block"](z)
-            return(y_hat)
-
-        for reconstruction_step in range(max_reconstruction_steps):
-            z = self.classifier["cnn_block"](X)
-            z = z.reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
-            y_hat = self.classifier["head_block"](z)
-
-            h = self.generator["head_block"](z, y_hat)
-            h_reshaped_for_cnn_block = torch.reshape(h, (batch_size, *self.config_dict["generator_input_dims"]))
-            X_hat = self.generator["trans_cnn_block"](h_reshaped_for_cnn_block)
-            # X_hat = nn.functional.pad(X_hat, (3, 3, 3, 3))
-            # X_hat = nn.functional.pad(X_hat, (0, 1, 0, 1))
-
-            reconstruction_loss = self.loss_func_img_reconstruction(X_hat, X)
-            reconstruction_loss.backward()
-
-
-            classifier_cnn_block_optimizer.step()
-            classifier_cnn_block_optimizer.zero_grad()
-
-            classifier_head_block_optimizer.step()
-            # for l in self.classifier["head_block"].dense_layers_stack:
-            #     if type(l) == torch.nn.modules.linear.Linear:
-            #         print(torch.sum(torch.abs(l.weight.grad)))
-            classifier_head_block_optimizer.zero_grad()
-
-            del z, h, h_reshaped_for_cnn_block, X_hat
-            # print(f"#{reconstruction_step}:\n>>> Now predicted: {torch.argmax(y_hat, dim=1).detach().cpu().tolist()}\n")
-            if reconstruction_step != max_reconstruction_steps-1:
-                del y_hat
-
-        return(y_hat)
 
     def turn_model_to_mode(self, mode="train"):
         assert mode in ("train", "training", "eval", "evaluation")
@@ -172,60 +144,3 @@ class ReGALModel(nn.Module):
             }, filepath)
         print(f"Successfully saved the model's parameters to {filepath}")
         return(True)
-
-    def pretrain(self, epochs, X_train_loader, batch_size=32, past_loss_history=None, verbose=True, is_wandb_run=False, class_names=None):
-        pretrain_logging = PretrainLogging(
-            past_loss_history=past_loss_history, verbose=verbose, is_wandb_run=is_wandb_run,
-            class_names=class_names, num_of_epochs=epochs
-        )
-
-        self.turn_model_to_mode(mode="train")
-
-        for epoch_i in range(epochs):
-            for data in X_train_loader:
-                X, y = [part_of_data.to(self.config_dict["device"]) for part_of_data in data]
-
-                ##### Classifier #####
-                # regular supervised classification step
-                z = self.classifier["cnn_block"](X)
-                z = z.reshape((batch_size, self.config_dict["classifier_cnn_output_dim"]))
-                y_hat = self.classifier["head_block"](z)
-                classification_loss = self.loss_func_classification(y_hat, y)
-                classification_loss.backward(retain_graph=True)
-                self.classifier_optimizer.step()
-                self.classifier_optimizer.zero_grad()
-                #####
-
-
-                ##### Generator #####
-                # 1. Reconstruction step w/ the classes (either w/ predicted => unsupervised mode; or w/ true target labels => only supervised)
-                y_onehot = nn.functional.one_hot(y,10).float().to(self.config_dict["device"])
-                h = self.generator["head_block"](z.detach(), y_onehot) # <-- pretraining generator on the true target labels (less noise)
-                # h = self.generator["head_block"](z.detach(), y_hat.detach()) # <-- pretraining generator on classifier's prediction
-                h_reshaped_for_cnn_block = torch.reshape(h, (batch_size, *self.config_dict["generator_input_dims"]))
-                X_hat = self.generator["trans_cnn_block"](h_reshaped_for_cnn_block)
-                reconstruction_loss = self.loss_func_img_reconstruction(X_hat, X)
-
-                # 2. Generator's loss for the classification inaccuracy from its reconstructed imgs by the classifier
-                z = self.classifier["cnn_block"](X_hat)
-                z = z.reshape((self.config_dict["classifier_cnn_input_dims"][0], self.config_dict["classifier_cnn_output_dim"]))
-                y_hat = self.classifier["head_block"](z)
-                classification_loss_from_reconstructed_img = self.loss_func_classification(y_hat, y)
-
-                merged_generator_loss = \
-                    self.config_dict["generator_alpha"] * reconstruction_loss \
-                    + (1 - self.config_dict["generator_alpha"]) * classification_loss_from_reconstructed_img
-                merged_generator_loss.backward()
-                self.classifier_optimizer.zero_grad()
-                
-                self.generator_optimizer.step()
-                self.generator_optimizer.zero_grad()
-                #####
-
-            pretrain_logging.track_epoch(
-                epoch_i, classification_loss.detach().cpu().item(), reconstruction_loss.detach().cpu().item(),
-                X.detach().cpu(), X_hat.detach().cpu(), y.detach().cpu(), y_hat.detach().cpu()
-            )
-
-        loss_history, samples = pretrain_logging.end_pretraining()
-        return(loss_history, samples)
