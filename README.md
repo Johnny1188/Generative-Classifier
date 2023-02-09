@@ -15,3 +15,5 @@
 
 **Learned categories of MNIST by the generative process after 1 epoch:** *(with zeroed-out input from the classfier's CNN block, only one-hot encoded category on the input)*
 ![Learned categories](/results/mnist_after_1_epoch.jpg)
+
+More complex datasets such as CIFAR10 showed only small improvements with additional computational overhead resulting in slower training and inference. In the future, I would like to experiment with the generative model reconstructing the activations of the classifier or some other latent variables, thereby reducing the dependence on the dataset.
